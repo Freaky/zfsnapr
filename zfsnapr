@@ -86,16 +86,16 @@ module ZFS
   end
 
   def self.snapshot_create(snapshot)
-    pools.each do |pool|
-      system "zfs snapshot -r #{pool}@#{snapshot}"
-      child_error("Error creating snapshot on #{pool}@#{snapshot}")
+    pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
+      system "zfs snapshot -r #{snap}"
+      child_error("Error creating snapshot on #{snap}")
     end
   end
 
   def self.snapshot_destroy(snapshot)
-    pools.each do |pool|
-      system "zfs destroy -r #{pool}@#{snapshot}"
-      child_error("Error destroying snapshot on #{pool}@#{snapshot}")
+    pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
+      system "zfs destroy -r #{snap}"
+      child_error("Error destroying snapshot on #{snap}")
     end
   end
 
