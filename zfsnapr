@@ -1,0 +1,155 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Mount a recursive snapshot of all mounted ZFS datasets on a target directory
+#
+# Usage: zfsnapr mount /backup
+#        zfsnapr umount /backup
+#        zfsnapr execute /backup tar cvzf /dump/backup.tgz /backup
+
+require 'English'
+require 'digest/sha2'
+require 'pathname'
+
+PROG = 'zfsnapr'
+
+args = ARGV.dup
+action = args.shift || abort('No action specified')
+target_directory = args.shift || abort('No target directory specified')
+snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(File.expand_path(target_directory))}"
+
+abort('Target directory unavailable') unless File.directory?(target_directory)
+abort('Will not mount to root') if File.expand_path(target_directory) == '/'
+
+Dataset = Struct.new(:name, :mountpoint)
+
+def child_error(message)
+  abort(message) unless $CHILD_STATUS.success?
+end
+
+# Since `umount -R` is platform-specific, we must make note of our mounts so we
+# can reliably umount the tree without messing with system-specific means of
+# listing mountpoints that might prove fragile
+class MountpointStore
+  attr_reader :filename
+
+  def initialize(snapshot)
+    @filename = "/tmp/#{PROG}-#{snapshot}.mounts"
+  end
+
+  def read
+    IO.read(filename).split("\000")
+  end
+
+  def write(mountpoints)
+    IO.write(filename, mountpoints.join("\000"))
+  end
+
+  def clear
+    File.unlink(filename)
+  end
+end
+
+module ZFS
+  def self.pools
+    pools = `zpool list -Ho name`.lines.map(&:chomp)
+    child_error('Unble to list pools')
+    pools
+  end
+
+  def self.mounted_datasets
+    datasets = `zfs list -Ho name`.lines.map { |line| Dataset.new(line.chomp) }
+    child_error('Unble to list datasets')
+
+    # Mountpoints follow filesystem naming rules, so may be mangled by a normal
+    # call to zfs list, e.g. if they contain a newline.
+    # Sadly this seems the only safe way to deal with them.
+    datasets.each { |dataset| dataset.mountpoint = dataset_mountpoint(dataset.name) }
+    datasets.select!(&:mountpoint)
+    datasets.sort_by!(&:mountpoint)
+
+    datasets
+  end
+
+  def self.dataset_mountpoint(dataset)
+    mountpoint = `zfs list -Hpo mountpoint #{dataset}`.chomp("\n")
+    child_error("Unble to retrieve mountpoint for #{dataset}")
+    return mountpoint if mountpoint.start_with?('/')
+  end
+
+  def self.snapshotted_datasets(snapshot)
+    snapshots = `zfs list -t snapshot -Ho name`
+                .lines.map { |line| Dataset.new(line.chomp) }
+                .select { |dataset| dataset.name.split('@', 2).last == snapshot }
+    child_error('Error listing snapshots')
+    snapshots
+  end
+
+  def self.snapshot_create(snapshot)
+    pools.each do |pool|
+      system "zfs snapshot -r #{pool}@#{snapshot}"
+      child_error("Error creating snapshot on #{pool}@#{snapshot}")
+    end
+  end
+
+  def self.snapshot_destroy(snapshot)
+    pools.each do |pool|
+      system "zfs destroy -r #{pool}@#{snapshot}"
+      child_error("Error destroying snapshot on #{pool}@#{snapshot}")
+    end
+  end
+
+  def self.snapshot_mount(snapshot, target)
+    snapshot_create(snapshot)
+
+    datasets = mounted_datasets
+    mountpoints = datasets.map(&:mountpoint).map { |mp| File.join(target, mp) }
+    MountpointStore.new(snapshot).write(mountpoints)
+
+    datasets.each do |dataset|
+      snapname = "#{dataset.name}@#{snapshot}"
+      mountpoint = File.join(target, dataset.mountpoint).to_s
+      system(*(%w[mount -t zfs -o noexec,nosuid,ro] + [snapname, mountpoint]))
+      child_error("Error mounting #{snapname} on #{mountpoint}")
+    end
+  end
+
+  def self.snapshot_umount(snapshot, target)
+    abort("Snapshot #{snapshot} not found") unless snapshotted_datasets(snapshot).any?
+
+    mountpoint_store = MountpointStore.new(snapshot)
+    expanded_target = File.expand_path(target)
+
+    begin
+      errors = false
+      mountpoint_store.read.sort.reverse_each do |mountpoint|
+        next unless Pathname.new(mountpoint).mountpoint?
+
+        unless File.expand_path(mountpoint).start_with?(expanded_target)
+          abort("Stored mountpoint '#{mountpoint}' not within target")
+        end
+        system('umount', mountpoint)
+        warn("Error umounting #{mountpoint}") unless $CHILD_STATUS.success?
+        errors = true
+      end
+      mountpoint_store.clear unless errors
+    rescue Errno::ENOENT
+      warn('Mountpoint list not found, assuming already unmounted')
+    end
+
+    snapshot_destroy(snapshot)
+  end
+end
+
+case action
+when 'mount' then ZFS.snapshot_mount(snapshot, target_directory)
+when 'umount' then ZFS.snapshot_umount(snapshot, target_directory)
+when 'execute'
+  abort('No action specified') if args.empty?
+  ZFS.snapshot_mount(snapshot, target_directory)
+  system(*args)
+  ZFS.snapshot_umount(snapshot, target_directory)
+  exit($CHILD_STATUS.exitstatus)
+else
+  abort('Invalid action specified')
+end
