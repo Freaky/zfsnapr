@@ -9,11 +9,50 @@
 
 require 'English'
 require 'digest/sha2'
+require 'optparse'
 require 'pathname'
 
 PROG = 'zfsnapr'
+VERSION = '0.1.0-pre'
+
+options = Struct.new(:exec, :suid).new(false, false)
+
+parser = OptionParser.new do |opts|
+  opts.banner = <<-EOC
+    Usage: #{$0} [options] mount mountpoint
+           #{$0} [options] umount mountpoint
+           #{$0} [options] execute mountpoint command [args...]
+  EOC
+
+  opts.on('-s', '--suid', 'Do not mount nosuid') do
+    options.suid = true
+  end
+
+  opts.on('-e', '--exec', 'Do not mount noexec') do
+    options.exec = true
+  end
+
+  opts.on('-V', '--version', 'Display program version and exit') do
+    puts "#{PROG} #{VERSION}"
+    exit
+  end
+
+  opts.on('-h', '--help', 'Display usage and exit') do
+    puts opts
+    exit
+  end
+end
 
 args = ARGV.dup
+
+begin
+  parser.order!(args)
+rescue OptionParser::InvalidOption => io
+  args = io.recover(args)
+rescue => e
+  abort(": #{e}")
+end
+
 action = args.shift || abort('No action specified')
 target_directory = args.shift || abort('No target directory specified')
 snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(File.expand_path(target_directory))[0..15]}"
@@ -103,8 +142,13 @@ module ZFS
     end
   end
 
-  def self.snapshot_mount(snapshot, target)
+  def self.snapshot_mount(snapshot, target, options)
     snapshot_create(snapshot)
+
+    mountopts = %w[ro]
+    mountopts << 'noexec' unless options.exec
+    mountopts << 'nosuid' unless options.suid
+    mountopts = mountopts.join(',')
 
     datasets = mounted_datasets
     mountpoints = datasets.map(&:mountpoint).map { |mp| File.join(target, mp) }
@@ -113,7 +157,7 @@ module ZFS
     datasets.each do |dataset|
       snapname = "#{dataset.name}@#{snapshot}"
       mountpoint = File.join(target, dataset.mountpoint).to_s
-      system(*(%w[mount -t zfs -o noexec,nosuid,ro] + [snapname, mountpoint]))
+      system(*(%w[mount -t zfs -o] + [mountopts, snapname, mountpoint]))
       child_error("Error mounting #{snapname} on #{mountpoint}")
     end
   end
@@ -146,11 +190,11 @@ module ZFS
 end
 
 case action
-when 'mount' then ZFS.snapshot_mount(snapshot, target_directory)
+when 'mount' then ZFS.snapshot_mount(snapshot, target_directory, options)
 when 'umount' then ZFS.snapshot_umount(snapshot, target_directory)
 when 'execute'
   abort('No action specified') if args.empty?
-  ZFS.snapshot_mount(snapshot, target_directory)
+  ZFS.snapshot_mount(snapshot, target_directory, options)
   system(*args)
   ZFS.snapshot_umount(snapshot, target_directory)
   exit($CHILD_STATUS.exitstatus)
