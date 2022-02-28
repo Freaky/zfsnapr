@@ -48,13 +48,16 @@ args = ARGV.dup
 begin
   parser.order!(args)
 rescue OptionParser::InvalidOption => e
+  unless %w(mount umount execute).include? e.args.first
+    abort(parser.to_s)
+  end
   args = e.recover(args)
 rescue StandardError => e
   abort("Argument parse failure: #{e}")
 end
 
-action = args.shift || abort('No action specified')
-target_directory = args.shift || abort('No target directory specified')
+action = args.shift || abort(parser.to_s)
+target_directory = args.shift || abort(parser.to_s)
 snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(File.expand_path(target_directory))[0..15]}"
 
 abort('Target directory unavailable') unless File.directory?(target_directory)
