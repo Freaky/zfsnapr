@@ -8,9 +8,14 @@ It works by creating a recursive snapshot of all ZFS pools, and then recursively
 
 ## Usage
 
-    zfsnapr mount path
-    zfsnapr umount path
-    zfsnapr execute path command [args ...]
+    zfsnapr [options] mount mountpoint
+    zfsnapr [options] umount mountpoint
+    zfsnapr [options] execute mountpoint command [args...]
+
+    -s, --suid                       Do not mount nosuid
+    -e, --exec                       Do not mount noexec
+    -V, --version                    Display program version and exit
+    -h, --help                       Display usage and exit
 
 ## Examples
 
