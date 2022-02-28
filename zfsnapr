@@ -15,13 +15,13 @@ require 'pathname'
 PROG = 'zfsnapr'
 VERSION = '0.1.0-pre'
 
-options = Struct.new(:exec, :suid).new(false, false)
+options = Struct.new(:exec, :suid).new
 
 parser = OptionParser.new do |opts|
   opts.banner = <<-EOC
-    Usage: #{$0} [options] mount mountpoint
-           #{$0} [options] umount mountpoint
-           #{$0} [options] execute mountpoint command [args...]
+    Usage: #{$PROGRAM_NAME} [options] mount mountpoint
+           #{$PROGRAM_NAME} [options] umount mountpoint
+           #{$PROGRAM_NAME} [options] execute mountpoint command [args...]
   EOC
 
   opts.on('-s', '--suid', 'Do not mount nosuid') do
@@ -47,10 +47,10 @@ args = ARGV.dup
 
 begin
   parser.order!(args)
-rescue OptionParser::InvalidOption => io
-  args = io.recover(args)
-rescue => e
-  abort(": #{e}")
+rescue OptionParser::InvalidOption => e
+  args = e.recover(args)
+rescue StandardError => e
+  abort("Argument parse failure: #{e}")
 end
 
 action = args.shift || abort('No action specified')
