@@ -16,7 +16,7 @@ PROG = 'zfsnapr'
 args = ARGV.dup
 action = args.shift || abort('No action specified')
 target_directory = args.shift || abort('No target directory specified')
-snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(File.expand_path(target_directory))}"
+snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(File.expand_path(target_directory))[0..15]}"
 
 abort('Target directory unavailable') unless File.directory?(target_directory)
 abort('Will not mount to root') if File.expand_path(target_directory) == '/'
