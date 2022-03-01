@@ -15,7 +15,13 @@ require 'pathname'
 PROG = 'zfsnapr'
 VERSION = '0.1.0-pre'
 
-options = Struct.new(:exec, :suid).new
+options = Struct.new(:root, :excludes, :exec, :suid).new
+
+def ensure_path(path)
+  Pathname.new(path).cleanpath.realpath
+rescue SystemCallError => e
+  abort("#{path}: #{e.message}")
+end
 
 parser = OptionParser.new do |opts|
   opts.banner = <<-EOC
@@ -24,12 +30,24 @@ parser = OptionParser.new do |opts|
            #{$PROGRAM_NAME} [options] execute mountpoint command [args...]
   EOC
 
-  opts.on('-s', '--suid', 'Do not mount nosuid') do
-    options.suid = true
+  opts.on('-E', '--exclude PATH', 'Do not mount datasets under these locations') do |ignore|
+    (options.excludes ||= []) << ignore
+  end
+
+  opts.on('-r', '--root ROOT', 'Only mount datasets from this mountpoint onwards') do |root|
+    root = ensure_path(root)
+
+    abort("#{root}: not a mountpoint") unless root.mountpoint?
+
+    options.root = root.to_s
   end
 
   opts.on('-e', '--exec', 'Do not mount noexec') do
     options.exec = true
+  end
+
+  opts.on('-s', '--suid', 'Do not mount nosuid') do
+    options.suid = true
   end
 
   opts.on('-V', '--version', 'Display program version and exit') do
@@ -58,10 +76,14 @@ end
 
 action = args.shift || abort(parser.to_s)
 target_directory = args.shift || abort(parser.to_s)
-snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(File.expand_path(target_directory))[0..15]}"
+target_directory = ensure_path(target_directory)
 
-abort('Target directory unavailable') unless File.directory?(target_directory)
-abort('Will not mount to root') if File.expand_path(target_directory) == '/'
+abort('Target location is not a directory') unless target_directory.directory?
+abort('Will not mount to root') if target_directory.root?
+
+target_directory = target_directory.to_s
+
+snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(target_directory)[0..15]}"
 
 Dataset = Struct.new(:name, :mountpoint)
 
@@ -154,12 +176,30 @@ module ZFS
     mountopts = mountopts.join(',')
 
     datasets = mounted_datasets
-    mountpoints = datasets.map(&:mountpoint).map { |mp| File.join(target, mp) }
-    MountpointStore.new(snapshot).write(mountpoints)
 
-    datasets.each do |dataset|
+    if options.root
+      datasets.select! do |dataset|
+        dataset.mountpoint == options.root || dataset.mountpoint.start_with?(options.root + '/')
+      end
+    end
+
+    if options.excludes
+      datasets.reject! do |dataset|
+        options.excludes.include?(dataset.mountpoint) ||
+        options.excludes.any? { |exc| dataset.mountpoint.start_with?(exc + '/') }
+      end
+    end
+
+    dataset_mountpoint = datasets.sort_by(&:mountpoint).map do |dataset|
+      mountpoint = dataset.mountpoint
+      mountpoint = dataset.mountpoint.delete_prefix(options.root) if options.root
+      [dataset, File.join(target, mountpoint)]
+    end
+
+    MountpointStore.new(snapshot).write(dataset_mountpoint.map(&:last))
+
+    dataset_mountpoint.each do |dataset, mountpoint|
       snapname = "#{dataset.name}@#{snapshot}"
-      mountpoint = File.join(target, dataset.mountpoint).to_s
       system(*(%w[mount -t zfs -o] + [mountopts, snapname, mountpoint]))
       child_error("Error mounting #{snapname} on #{mountpoint}")
     end

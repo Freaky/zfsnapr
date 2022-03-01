@@ -12,8 +12,10 @@ It works by creating a recursive snapshot of all ZFS pools, and then recursively
     zfsnapr [options] umount mountpoint
     zfsnapr [options] execute mountpoint command [args...]
 
-    -s, --suid                       Do not mount nosuid
+    -E, --exclude PATH               Do not mount datasets under this path
+    -r, --root ROOT                  Only mount from the dataset mounted here
     -e, --exec                       Do not mount noexec
+    -s, --suid                       Do not mount nosuid
     -V, --version                    Display program version and exit
     -h, --help                       Display usage and exit
 
@@ -23,6 +25,10 @@ It works by creating a recursive snapshot of all ZFS pools, and then recursively
         borg create backup@backup0:/backups::my-backup /mnt/backup
 
 Mounts snapshots of the system into the `/mnt/backup` directory and uses [Borg](https://borgbackup.readthedocs.io/en/stable/) to create a remote backup.
+
+    zfsnapr -r /home -E /home/sekrit mount /mnt/backup
+
+Mount a snapshot of all datasets mounted under `/home`, except for `/home/sekrit`. Note this will require the `/home` dataset itself to be mounted to provide the mount points for its child datasets.
 
 ## Requirements
 
