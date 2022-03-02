@@ -28,7 +28,7 @@ Mounts snapshots of the system into the `/mnt/backup` directory and uses [Borg](
 
     zfsnapr -r /home -E /home/sekrit mount /mnt/backup
 
-Mount a snapshot of all datasets mounted under `/home`, except for `/home/sekrit`. Note this will require the `/home` dataset itself to be mounted to provide the mount points for its child datasets.
+Mount a snapshot of all datasets mounted under `/home`, except for `/home/sekrit`. Note this will require the `/home` dataset itself to be mounted to provide the mount points for its child datasets, or for you to have provided them under `/mnt/backup` in advance.
 
 ## Requirements
 
