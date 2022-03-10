@@ -13,10 +13,13 @@ It works by creating a recursive snapshot of all ZFS pools, and then recursively
     zfsnapr [options] execute mountpoint command [args...]
 
     -E, --exclude PATH               Do not mount datasets under this path
-    -r, --root ROOT                  Only mount from the dataset mounted here
+    -r, --root PATH                  Only mount from the dataset mounted in this path
     -e, --exec                       Do not mount noexec
     -s, --suid                       Do not mount nosuid
     -V, --version                    Display program version and exit
+    -D, --devfs                      Mount a /dev in the target
+    -T, --tmpfs PATH                 Mount a tmpfs on this path within the target
+    -P, --passthrough PATH           Pass-through a location from the host
     -h, --help                       Display usage and exit
 
 ## Examples

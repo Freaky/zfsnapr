@@ -11,11 +11,12 @@ require 'English'
 require 'digest/sha2'
 require 'optparse'
 require 'pathname'
+require 'set'
 
 PROG = 'zfsnapr'
 VERSION = '0.1.0-pre'
 
-options = Struct.new(:root, :excludes, :exec, :suid).new
+options = Struct.new(:root, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough).new
 
 def ensure_path(path)
   Pathname.new(path).cleanpath.realpath
@@ -30,12 +31,12 @@ parser = OptionParser.new do |opts|
            #{$PROGRAM_NAME} [options] execute mountpoint command [args...]
   EOC
 
-  opts.on('-E', '--exclude PATH', 'Do not mount datasets under these locations') do |ignore|
-    (options.excludes ||= []) << ignore
+  opts.on('-E', '--exclude PATH', 'Do not mount datasets under this path') do |path|
+    (options.excludes ||= []) << path
   end
 
-  opts.on('-r', '--root ROOT', 'Only mount datasets from this mountpoint onwards') do |root|
-    root = ensure_path(root)
+  opts.on('-r', '--root PATH', 'Only mount from the dataset mounted in this path') do |path|
+    root = ensure_path(path)
 
     abort("#{root}: not a mountpoint") unless root.mountpoint?
 
@@ -53,6 +54,18 @@ parser = OptionParser.new do |opts|
   opts.on('-V', '--version', 'Display program version and exit') do
     puts "#{PROG} #{VERSION}"
     exit
+  end
+
+  opts.on('-D', '--devfs', 'Mount a /dev in the target') do
+    options.devfs = true
+  end
+
+  opts.on('-T', '--tmpfs PATH', 'Mount a tmpfs on this path within the target') do |path|
+    (options.tmpfs ||= Set.new) << path
+  end
+
+  opts.on('-P', '--passthrough PATH', 'Pass-through a location from the host') do |path|
+    (options.passthrough ||= Set.new) << ensure_path(path).to_s
   end
 
   opts.on('-h', '--help', 'Display usage and exit') do
@@ -196,12 +209,47 @@ module ZFS
       [dataset, File.join(target, mountpoint)]
     end
 
-    MountpointStore.new(snapshot).write(dataset_mountpoint.map(&:last))
+    mountpoints = dataset_mountpoint.map(&:last)
+    mountpoints << File.join(target, 'dev') if options.devfs
+    mountpoints += (options.tmpfs || []).map { |m| File.join(target, m) }
+    mountpoints += (options.passthrough || []).map { |m| File.join(target, m) }
+
+    MountpointStore.new(snapshot).write(mountpoints.sort)
 
     dataset_mountpoint.each do |dataset, mountpoint|
       snapname = "#{dataset.name}@#{snapshot}"
       system(*(%w[mount -t zfs -o] + [mountopts, snapname, mountpoint]))
       child_error("Error mounting #{snapname} on #{mountpoint}")
+    end
+
+    if options.devfs
+      mountpoint = File.join(target, 'dev')
+      if RUBY_PLATFORM.include?('linux')
+        system(*(%w[mount --bind -o rw /dev] + [mountpoint]))
+      elsif RUBY_PLATFORM.include?('freebsd')
+        system(*(%w[mount -t devfs devfs] + [mountpoint]))
+      else
+        warn('Dev mounting not supported on this platform')
+      end
+      child_error("Error mounting devfs on #{mountpoint}")
+    end
+
+    (options.tmpfs || []).each do |tmpfs|
+      mountpoint = File.join(target, tmpfs)
+      system(*(%w[mount -t tmpfs tmpfs] + [mountpoint]))
+      child_error("Error mounting tmpfs on #{mountpoint}")
+    end
+
+    (options.passthrough || []).each do |src|
+      mountpoint = File.join(target, src)
+      if RUBY_PLATFORM.include?('linux')
+        system(*(%w[mount --bind -o rw,exec] + [src, mountpoint]))
+      elsif RUBY_PLATFORM.include?('freebsd')
+        system(*(%w[mount_nullfs -o rw,exec] + [src, mountpoint]))
+      else
+        warn("Passthrough mounts not supported on this platform")
+      end
+      child_error("Error mounting nullfs from #{src} to #{mountpoint}")
     end
   end
 
