@@ -170,13 +170,17 @@ module ZFS
     pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
       system "zfs snapshot -r #{snap}"
       child_error("Error creating snapshot on #{snap}")
+      system "zfs hold -r #{snapshot} #{snap}"
+      child_error("Error holding snapshot on #{snap}")
+      system "zfs destroy -dr #{snap}"
+      child_error("Error performing deferred destroy on #{snap}")
     end
   end
 
   def self.snapshot_destroy(snapshot)
     pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
-      system "zfs destroy -r #{snap}"
-      child_error("Error destroying snapshot on #{snap}")
+      system "zfs release -r #{snapshot} #{snap}"
+      child_error("Error releasing snapshot on #{snap}")
     end
   end
 
