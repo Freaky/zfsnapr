@@ -1,10 +1,8 @@
 # zfsnapr
 
-`zfsnapr` is an experimental tool to mount a snapshot of a ZFS system onto an alternative location.
+`zfsnapr` is a tool for mounting recursive ZFS snapshots on an alternative root path.
 
-This is intended for use in making consistent backups using tools that are otherwise not ZFS-aware.
-
-It works by creating a recursive snapshot of all ZFS pools, and then recursively mounting snapshots of all datasets with a mountpoint into the target location. On umount, these are recursively unmounted and the snapshots destroyed.
+Its primary intended use-case is for making consistant point-in-time backups using tools that are otherwise not ZFS-aware, though it is by no means limited to this.
 
 ## Usage
 
@@ -22,12 +20,21 @@ It works by creating a recursive snapshot of all ZFS pools, and then recursively
     -P, --passthrough PATH           Pass-through a location from the host
     -h, --help                       Display usage and exit
 
+The `mount` and `umount` subcommands simply create or tear down the requested mountpoints.
+
+`execute` is equivalent to `mount`, executing the given command, followed by `umount`.  In this case `zfsnapr` will exit with the same return code as the executing command.
+
 ## Examples
 
     zfsnapr execute /mnt/backup \
         borg create backup@backup0:/backups::my-backup /mnt/backup
 
-Mounts snapshots of the system into the `/mnt/backup` directory and uses [Borg](https://borgbackup.readthedocs.io/en/stable/) to create a remote backup.
+Mounts snapshots of the system into the `/mnt/backup` directory and uses [Borg](https://borgbackup.readthedocs.io/en/stable/) to create a remote backup from it.
+
+    zfssnapr -eD -T /tmp -P /var/cache/backup execute /mnt/backup \
+        chroot /mnt/backup /root/backup.sh
+
+Create a chroot environment with executable mounts, a usable `/dev`, pristine tmpfs `/tmp`, and the host `/var/cache/backup` mounted read-write, and execute the script `/root/backup.sh` from within it.
 
     zfsnapr -r /home -E /home/sekrit mount /mnt/backup
 
@@ -35,8 +42,8 @@ Mount a snapshot of all datasets mounted under `/home`, except for `/home/sekrit
 
 ## Requirements
 
-`zfsnapr` should work on any officially-supported Ruby version, and any ZFS version which supports `zfs list -p`.
+`zfsnapr` should work on any officially-supported Ruby version without additional dependancies, and any ZFS version which supports `zfs list -p`.
 
 `zfsnapr` is intended for use on pure ZFS systems, and assumes that the full filesystem hierarchy can be mounted through ZFS mountpoints only.
 
-`zfsnapr` will abort on any error and may require manual intervention to cleanup mountpoints and snapshots.
+`zfsnapr` will abort on any error and may require manual intervention to cleanup mountpoints and snapshots - though normally a `zfsnapr umount` should suffice.
