@@ -135,10 +135,10 @@ module ZFS
   end
 
   def self.mounted_datasets
-    datasets = `zfs list -Ho name,canmount`
+    datasets = `zfs list -Ho name,mounted`
                .lines
                .map { |line| line.chomp.split("\t", 2) }
-               .select { |_, canmount| canmount == 'on' }
+               .select { |_, mounted| mounted == 'yes' }
                .map { |name, _| Dataset.new(name) }
     child_error('Unble to list datasets')
 
