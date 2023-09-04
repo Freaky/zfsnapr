@@ -152,7 +152,10 @@ end
 
 module ZFS
   def self.list_pools
-    pools = `zpool list -Ho name`.lines.map(&:chomp)
+    pools = `zpool list -Ho name,altroot`
+      .lines
+      .map { |line| line.chomp.split("\t", 2) }
+      .filter_map { |name, altroot| name if altroot == '-' }
     child_error('Unble to list pools')
     pools
   end
