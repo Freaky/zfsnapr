@@ -17,7 +17,8 @@ require 'set'
 PROG = 'zfsnapr'
 VERSION = '0.2.0-pre'
 
-options = Struct.new(:root, :pools, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough).new
+Options = Struct.new(:root, :pools, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough, keyword_init: true)
+options = Options.new(pools: Set.new, excludes: Set.new, tmpfs: Set.new, passthrough: Set.new)
 
 def ensure_path(path)
   Pathname.new(path).cleanpath.realpath
@@ -33,7 +34,7 @@ parser = OptionParser.new do |opts|
   BANNER
 
   opts.on('-E', '--exclude PATH', 'Do not mount datasets under this path') do |path|
-    (options.excludes ||= []) << path
+    options.excludes << path
   end
 
   opts.on('-r', '--root PATH', 'Only mount from the dataset mounted in this path') do |path|
@@ -60,15 +61,15 @@ parser = OptionParser.new do |opts|
   end
 
   opts.on('-T', '--tmpfs PATH', 'Mount a tmpfs on this path within the target') do |path|
-    (options.tmpfs ||= Set.new) << path
+    options.tmpfs << path
   end
 
   opts.on('-p', '--pool POOL', 'Include this pool in the snapshot') do |path|
-    (options.pools ||= []) << path
+    options.pools << path
   end
 
   opts.on('-P', '--passthrough PATH', 'Pass-through a location from the host') do |path|
-    (options.passthrough ||= Set.new) << ensure_path(path).to_s
+    options.passthrough << ensure_path(path).to_s
   end
 
   opts.on('-h', '--help', 'Display usage and exit') do
@@ -238,7 +239,7 @@ module ZFS
 
   def self.snapshot_mount(snapshot, target, options)
     pools = list_pools
-    pools &= options.pools if options.pools
+    pools &= options.pools.to_a if options.pools.any?
     snapshot_create(pools, snapshot)
 
     mountopts = %w[ro]
@@ -248,23 +249,14 @@ module ZFS
 
     datasets = mounted_datasets
 
-    if options.root
-      datasets.select! { |dataset| dataset.mounted_under?(options.root) }
-    end
-
-    if options.excludes
-      datasets.reject! do |dataset|
-        options.excludes.any? { |exc| dataset.mounted_under?(exc) }
-      end
-    end
-
-    if options.pools
-      datasets.select! { |dataset| options.pools.include?(dataset.pool) }
+    datasets.select! do |dataset|
+      (options.root.nil? || dataset.mounted_under?(options.root)) &&
+        options.excludes.none? { |exc| dataset.mounted_under?(exc) } &&
+        pools.include?(dataset.pool)
     end
 
     dataset_mountpoint = datasets.sort_by(&:mountpoint).map do |dataset|
-      mountpoint = dataset.mountpoint
-      mountpoint = dataset.mountpoint.delete_prefix(options.root) if options.root
+      mountpoint = dataset.mountpoint.delete_prefix(options.root || '')
       [dataset, File.join(target, mountpoint)]
     end
 
