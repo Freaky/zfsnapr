@@ -303,12 +303,13 @@ module ZFS
         mounts_store.call(mountpoint)
         if RUBY_PLATFORM.include?('linux')
           system(*(%w[mount --bind -o rw,exec] + [src, mountpoint]))
+          child_error("Error bind mounting from #{src} to #{mountpoint}")
         elsif RUBY_PLATFORM.include?('freebsd')
           system(*(%w[mount_nullfs -o rw,exec] + [src, mountpoint]))
+          child_error("Error mounting nullfs from #{src} to #{mountpoint}")
         else
           warn('Passthrough mounts not supported on this platform')
         end
-        child_error("Error mounting nullfs from #{src} to #{mountpoint}")
       end
     end
   end
