@@ -17,6 +17,7 @@ Its primary intended use-case is for making consistant point-in-time backups usi
     -V, --version                    Display program version and exit
     -D, --devfs                      Mount a /dev in the target
     -T, --tmpfs PATH                 Mount a tmpfs on this path within the target
+    -p, --pool POOL                  Include this pool in the snapshot
     -P, --passthrough PATH           Pass-through a location from the host
     -h, --help                       Display usage and exit
 
@@ -43,7 +44,5 @@ Mount a snapshot of all datasets mounted under `/home`, except for `/home/sekrit
 ## Requirements
 
 `zfsnapr` should work on any officially-supported Ruby version without additional dependancies, and any ZFS version which supports `zfs list -p`.
-
-`zfsnapr` is intended for use on pure ZFS systems, and assumes that the full filesystem hierarchy can be mounted through ZFS mountpoints only.
 
 `zfsnapr` will abort on any error and may require manual intervention to cleanup mountpoints and snapshots - though normally a `zfsnapr umount` should suffice.

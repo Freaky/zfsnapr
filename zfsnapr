@@ -11,12 +11,13 @@ require 'English'
 require 'digest/sha2'
 require 'optparse'
 require 'pathname'
+require 'fileutils'
 require 'set'
 
 PROG = 'zfsnapr'
-VERSION = '0.1.0-pre'
+VERSION = '0.2.0-pre'
 
-options = Struct.new(:root, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough).new
+options = Struct.new(:root, :pools, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough).new
 
 def ensure_path(path)
   Pathname.new(path).cleanpath.realpath
@@ -64,6 +65,10 @@ parser = OptionParser.new do |opts|
     (options.tmpfs ||= Set.new) << path
   end
 
+  opts.on('-p', '--pool POOL', 'Include this pool in the snapshot') do |path|
+    (options.pools ||= []) << path
+  end
+
   opts.on('-P', '--passthrough PATH', 'Pass-through a location from the host') do |path|
     (options.passthrough ||= Set.new) << ensure_path(path).to_s
   end
@@ -98,7 +103,11 @@ target_directory = target_directory.to_s
 
 snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(target_directory)[0..15]}"
 
-Dataset = Struct.new(:name, :mountpoint)
+Dataset = Struct.new(:name, :mountpoint) do
+  def pool
+    self.name.split(/\/|@/, 2).first
+  end
+end
 
 def child_error(message)
   abort(message) unless $CHILD_STATUS.success?
@@ -114,12 +123,26 @@ class MountpointStore
     @filename = "/tmp/#{PROG}-#{snapshot}.mounts"
   end
 
-  def read
-    IO.read(filename).split("\000")
+  def read_mountpoints
+    File.open(filename, 'r') do |fd|
+      fd.flock(File::LOCK_EX)
+      fd.read.split("\000")
+    end
   end
 
-  def write(mountpoints)
-    IO.write(filename, mountpoints.join("\000"))
+  def write_mountpoints
+    File.open(filename, 'w') do |fd|
+      fd.flock(File::LOCK_EX)
+      mounts = Set.new
+      writer = ->(mountpoint) do
+        return false unless mounts.add?(mountpoint)
+        fd.write("\000") if mounts.any?
+        fd.write(mountpoint)
+        fd.flush
+        true
+      end
+      yield writer
+    end
   end
 
   def clear
@@ -128,7 +151,7 @@ class MountpointStore
 end
 
 module ZFS
-  def self.pools
+  def self.list_pools
     pools = `zpool list -Ho name`.lines.map(&:chomp)
     child_error('Unble to list pools')
     pools
@@ -166,7 +189,7 @@ module ZFS
     snapshots
   end
 
-  def self.snapshot_create(snapshot)
+  def self.snapshot_create(pools, snapshot)
     pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
       system "zfs snapshot -r #{snap}"
       child_error("Error creating snapshot on #{snap}")
@@ -177,15 +200,40 @@ module ZFS
     end
   end
 
-  def self.snapshot_destroy(snapshot)
+  def self.snapshot_destroy(pools, snapshot)
     pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
       system "zfs release -r #{snapshot} #{snap}"
       child_error("Error releasing snapshot on #{snap}")
     end
   end
 
+  # ZFS can be mounted under non-ZFS filesystems we won't otherwise see, e.g.
+  # non-ZFS-on-root systems, or in cases where pools have been excluded.
+  #
+  # In this case, mount a tmpfs in which to create any intermediate directories
+  # on whatever mountpoint actually exists at this point.
+  def self.tmpfs_shim(mountpoint, target, mounts_store)
+    return if File.exist?(mountpoint)
+
+    parent = File.dirname(mountpoint)
+    while parent.start_with?(target)
+      if File.exist?(parent)
+        if mounts_store.call(parent)
+          system(*(%w[mount -t tmpfs tmpfs] + [parent]))
+          child_error("Error mounting tmpfs on #{parent}")
+        end
+        FileUtils.mkdir_p(mountpoint)
+        return
+      end
+
+      parent = File.dirname(parent)
+    end
+  end
+
   def self.snapshot_mount(snapshot, target, options)
-    snapshot_create(snapshot)
+    pools = list_pools
+    pools &= options.pools if options.pools
+    snapshot_create(pools, snapshot)
 
     mountopts = %w[ro]
     mountopts << 'noexec' unless options.exec
@@ -207,65 +255,72 @@ module ZFS
       end
     end
 
+    if options.pools
+      datasets.select! do |dataset|
+        options.pools.any? { |pool| dataset.pool == pool }
+      end
+    end
+
     dataset_mountpoint = datasets.sort_by(&:mountpoint).map do |dataset|
       mountpoint = dataset.mountpoint
       mountpoint = dataset.mountpoint.delete_prefix(options.root) if options.root
       [dataset, File.join(target, mountpoint)]
     end
 
-    mountpoints = dataset_mountpoint.map(&:last)
-    mountpoints << File.join(target, 'dev') if options.devfs
-    mountpoints += (options.tmpfs || []).map { |m| File.join(target, m) }
-    mountpoints += (options.passthrough || []).map { |m| File.join(target, m) }
-
-    MountpointStore.new(snapshot).write(mountpoints.sort)
-
-    dataset_mountpoint.each do |dataset, mountpoint|
-      snapname = "#{dataset.name}@#{snapshot}"
-      system(*(%w[mount -t zfs -o] + [mountopts, snapname, mountpoint]))
-      child_error("Error mounting #{snapname} on #{mountpoint}")
-    end
-
-    if options.devfs
-      mountpoint = File.join(target, 'dev')
-      if RUBY_PLATFORM.include?('linux')
-        system(*(%w[mount --bind -o rw /dev] + [mountpoint]))
-      elsif RUBY_PLATFORM.include?('freebsd')
-        system(*(%w[mount -t devfs devfs] + [mountpoint]))
-      else
-        warn('Dev mounting not supported on this platform')
+    MountpointStore.new(snapshot).write_mountpoints do |mounts_store|
+      dataset_mountpoint.each do |dataset, mountpoint|
+        tmpfs_shim(mountpoint, target, mounts_store)
+        mounts_store.call(mountpoint)
+        snapname = "#{dataset.name}@#{snapshot}"
+        system(*(%w[mount -t zfs -o] + [mountopts, snapname, mountpoint]))
+        child_error("Error mounting #{snapname} on #{mountpoint}")
       end
-      child_error("Error mounting devfs on #{mountpoint}")
-    end
 
-    (options.tmpfs || []).each do |tmpfs|
-      mountpoint = File.join(target, tmpfs)
-      system(*(%w[mount -t tmpfs tmpfs] + [mountpoint]))
-      child_error("Error mounting tmpfs on #{mountpoint}")
-    end
-
-    (options.passthrough || []).each do |src|
-      mountpoint = File.join(target, src)
-      if RUBY_PLATFORM.include?('linux')
-        system(*(%w[mount --bind -o rw,exec] + [src, mountpoint]))
-      elsif RUBY_PLATFORM.include?('freebsd')
-        system(*(%w[mount_nullfs -o rw,exec] + [src, mountpoint]))
-      else
-        warn("Passthrough mounts not supported on this platform")
+      if options.devfs
+        mountpoint = File.join(target, 'dev')
+        mounts_store.call(mountpoint)
+        if RUBY_PLATFORM.include?('linux')
+          system(*(%w[mount --bind -o rw /dev] + [mountpoint]))
+        elsif RUBY_PLATFORM.include?('freebsd')
+          system(*(%w[mount -t devfs devfs] + [mountpoint]))
+        else
+          warn('Dev mounting not supported on this platform')
+        end
+        child_error("Error mounting devfs on #{mountpoint}")
       end
-      child_error("Error mounting nullfs from #{src} to #{mountpoint}")
+
+      (options.tmpfs || []).each do |tmpfs|
+        mountpoint = File.join(target, tmpfs)
+        mounts_store.call(mountpoint)
+        system(*(%w[mount -t tmpfs tmpfs] + [mountpoint]))
+        child_error("Error mounting tmpfs on #{mountpoint}")
+      end
+
+      (options.passthrough || []).each do |src|
+        mountpoint = File.join(target, src)
+        mounts_store.call(mountpoint)
+        if RUBY_PLATFORM.include?('linux')
+          system(*(%w[mount --bind -o rw,exec] + [src, mountpoint]))
+        elsif RUBY_PLATFORM.include?('freebsd')
+          system(*(%w[mount_nullfs -o rw,exec] + [src, mountpoint]))
+        else
+          warn("Passthrough mounts not supported on this platform")
+        end
+        child_error("Error mounting nullfs from #{src} to #{mountpoint}")
+      end
     end
   end
 
   def self.snapshot_umount(snapshot, target)
-    abort("Snapshot #{snapshot} not found") unless snapshotted_datasets(snapshot).any?
+    snapshot_list = snapshotted_datasets(snapshot)
+    abort("Snapshot #{snapshot} not found") unless snapshot_list.any?
 
     mountpoint_store = MountpointStore.new(snapshot)
     expanded_target = File.expand_path(target)
 
     begin
       errors = false
-      mountpoint_store.read.sort.reverse_each do |mountpoint|
+      mountpoint_store.read_mountpoints.sort.reverse_each do |mountpoint|
         next unless Pathname.new(mountpoint).mountpoint?
 
         unless File.expand_path(mountpoint).start_with?(expanded_target)
@@ -280,7 +335,8 @@ module ZFS
       warn('Mountpoint list not found, assuming already unmounted')
     end
 
-    snapshot_destroy(snapshot)
+    pools = snapshot_list.inject(Set.new) { |pools, dataset| pools.add(dataset.pool) }
+    snapshot_destroy(pools, snapshot)
   end
 end
 
