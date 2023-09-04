@@ -104,6 +104,11 @@ Dataset = Struct.new(:name, :mountpoint) do
   def pool
     name.split(%r{/|@}, 2).first
   end
+
+  def mounted_under?(directory)
+    mountpoint == directory ||
+      mountpoint.start_with?(directory) && mountpoint[directory.length] == '/'
+  end
 end
 
 def child_error(message)
@@ -244,15 +249,12 @@ module ZFS
     datasets = mounted_datasets
 
     if options.root
-      datasets.select! do |dataset|
-        dataset.mountpoint == options.root || dataset.mountpoint.start_with?("#{options.root}/")
-      end
+      datasets.select! { |dataset| dataset.mounted_under?(options.root) }
     end
 
     if options.excludes
       datasets.reject! do |dataset|
-        options.excludes.include?(dataset.mountpoint) ||
-          options.excludes.any? { |exc| dataset.mountpoint.start_with?("#{exc}/") }
+        options.excludes.any? { |exc| dataset.mounted_under?(exc) }
       end
     end
 
