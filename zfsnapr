@@ -259,9 +259,7 @@ module ZFS
     end
 
     if options.pools
-      datasets.select! do |dataset|
-        options.pools.any? { |pool| dataset.pool == pool }
-      end
+      datasets.select! { |dataset| options.pools.include?(dataset.pool) }
     end
 
     dataset_mountpoint = datasets.sort_by(&:mountpoint).map do |dataset|
