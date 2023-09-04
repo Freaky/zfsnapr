@@ -284,12 +284,13 @@ module ZFS
         mounts_store.call(mountpoint)
         if RUBY_PLATFORM.include?('linux')
           system(*(%w[mount --bind -o rw /dev] + [mountpoint]))
+          child_error("Error bind mounting /dev on #{mountpoint}")
         elsif RUBY_PLATFORM.include?('freebsd')
           system(*(%w[mount -t devfs devfs] + [mountpoint]))
+          child_error("Error mounting devfs on #{mountpoint}")
         else
           warn('Dev mounting not supported on this platform')
         end
-        child_error("Error mounting devfs on #{mountpoint}")
       end
 
       (options.tmpfs || []).each do |tmpfs|
