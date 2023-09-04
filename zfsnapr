@@ -26,11 +26,11 @@ rescue SystemCallError => e
 end
 
 parser = OptionParser.new do |opts|
-  opts.banner = <<-EOC
+  opts.banner = <<-BANNER
     Usage: #{$PROGRAM_NAME} [options] mount mountpoint
            #{$PROGRAM_NAME} [options] umount mountpoint
            #{$PROGRAM_NAME} [options] execute mountpoint command [args...]
-  EOC
+  BANNER
 
   opts.on('-E', '--exclude PATH', 'Do not mount datasets under this path') do |path|
     (options.excludes ||= []) << path
@@ -82,9 +82,8 @@ args = ARGV.dup
 begin
   parser.order!(args)
 rescue OptionParser::InvalidOption => e
-  unless %w(mount umount execute).include? e.args.first
-    abort(parser.to_s)
-  end
+  abort(parser.to_s) unless %w[mount umount execute].include?(e.args.first)
+
   args = e.recover(args)
 rescue StandardError => e
   abort("Argument parse failure: #{e}")
@@ -103,7 +102,7 @@ snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(target_directory)[0..15]}"
 
 Dataset = Struct.new(:name, :mountpoint) do
   def pool
-    self.name.split(/\/|@/, 2).first
+    name.split(%r{/|@}, 2).first
   end
 end
 
@@ -132,8 +131,9 @@ class MountpointStore
     File.open(filename, 'w') do |fd|
       fd.flock(File::LOCK_EX)
       mounts = Set.new
-      writer = ->(mountpoint) do
+      writer = lambda do |mountpoint|
         return false unless mounts.add?(mountpoint)
+
         fd.write("\000") if mounts.any?
         fd.write(mountpoint)
         fd.flush
@@ -151,9 +151,9 @@ end
 module ZFS
   def self.list_pools
     pools = `zpool list -Ho name,altroot`
-      .lines
-      .map { |line| line.chomp.split("\t", 2) }
-      .filter_map { |name, altroot| name if altroot == '-' }
+            .lines
+            .map { |line| line.chomp.split("\t", 2) }
+            .filter_map { |name, altroot| name if altroot == '-' }
     child_error('Unble to list pools')
     pools
   end
@@ -245,14 +245,14 @@ module ZFS
 
     if options.root
       datasets.select! do |dataset|
-        dataset.mountpoint == options.root || dataset.mountpoint.start_with?(options.root + '/')
+        dataset.mountpoint == options.root || dataset.mountpoint.start_with?("#{options.root}/")
       end
     end
 
     if options.excludes
       datasets.reject! do |dataset|
         options.excludes.include?(dataset.mountpoint) ||
-        options.excludes.any? { |exc| dataset.mountpoint.start_with?(exc + '/') }
+          options.excludes.any? { |exc| dataset.mountpoint.start_with?("#{exc}/") }
       end
     end
 
@@ -305,7 +305,7 @@ module ZFS
         elsif RUBY_PLATFORM.include?('freebsd')
           system(*(%w[mount_nullfs -o rw,exec] + [src, mountpoint]))
         else
-          warn("Passthrough mounts not supported on this platform")
+          warn('Passthrough mounts not supported on this platform')
         end
         child_error("Error mounting nullfs from #{src} to #{mountpoint}")
       end
