@@ -342,8 +342,9 @@ when 'execute'
   abort('No action specified') if args.empty?
   ZFS.snapshot_mount(snapshot, target_directory, options)
   system(*args)
+  result = $CHILD_STATUS.exitstatus
   ZFS.snapshot_umount(snapshot, target_directory)
-  exit($CHILD_STATUS.exitstatus)
+  exit(result)
 else
   abort('Invalid action specified')
 end
