@@ -107,8 +107,10 @@ Dataset = Struct.new(:name, :mountpoint) do
   end
 
   def mounted_under?(directory)
+    # directory will only have trailing slash when it is the root directory.
     mountpoint == directory ||
-      mountpoint.start_with?(directory) && mountpoint[directory.length] == '/'
+      mountpoint.start_with?(directory) && mountpoint[directory.length] == '/' ||
+      directory == "/"
   end
 end
 
