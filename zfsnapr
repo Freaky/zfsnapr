@@ -17,8 +17,8 @@ require 'set'
 PROG = 'zfsnapr'
 VERSION = '0.2.0-pre'
 
-Options = Struct.new(:root, :pools, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough, keyword_init: true)
-options = Options.new(pools: Set.new, excludes: Set.new, tmpfs: Set.new, passthrough: Set.new)
+Options = Struct.new(:root, :pools, :excludes, :exec, :suid, :devfs, :tmpfs, :passthrough, :snapshot, keyword_init: true)
+options = Options.new(pools: Set.new, excludes: Set.new, tmpfs: Set.new, passthrough: Set.new, snapshot: String.new)
 
 def ensure_path(path)
   Pathname.new(path).cleanpath.realpath
@@ -72,6 +72,10 @@ parser = OptionParser.new do |opts|
     options.passthrough << ensure_path(path).to_s
   end
 
+  opts.on('-S', '--snapshot SNAPSHOT', 'Use existing SNAPSHOT instead of creating one') do |snapshot|
+    options.snapshot = snapshot
+  end
+
   opts.on('-h', '--help', 'Display usage and exit') do
     puts opts
     exit
@@ -99,7 +103,17 @@ abort('Will not mount to root') if target_directory.root?
 
 target_directory = target_directory.to_s
 
-snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(target_directory)[0..15]}"
+if options.snapshot != ""
+  # If snapshot contains '@' then it's in the form 'pool@snapshot',
+  # peel off just the 'snapshot' part.
+  if options.snapshot.include? "@"
+    snapshot = options.snapshot.split('@', 2)[1]
+  else
+    snapshot = options.snapshot
+  end
+else
+  snapshot = "#{PROG}-#{Digest::SHA256.hexdigest(target_directory)[0..15]}"
+end
 
 Dataset = Struct.new(:name, :mountpoint) do
   def pool
@@ -196,18 +210,29 @@ module ZFS
     snapshots
   end
 
-  def self.snapshot_create(pools, snapshot)
-    pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
-      system "zfs snapshot -r #{snap}"
-      child_error("Error creating snapshot on #{snap}")
-      system "zfs hold -r #{snapshot} #{snap}"
-      child_error("Error holding snapshot on #{snap}")
-      system "zfs destroy -dr #{snap}"
-      child_error("Error performing deferred destroy on #{snap}")
+  def self.snapshot_create(pools, snapshot, options)
+    # Only do if options.snapshot is ""
+    if options.snapshot == ""
+      pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
+        system "zfs snapshot -r #{snap}"
+        child_error("Error creating snapshot on #{snap}")
+        system "zfs hold -r #{snapshot} #{snap}"
+        child_error("Error holding snapshot on #{snap}")
+        system "zfs destroy -dr #{snap}"
+        child_error("Error performing deferred destroy on #{snap}")
+      end
+    else
+      pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
+        # Do hold snapshot though
+        system "zfs hold -r #{snapshot} #{snap}"
+        child_error("Error holding snapshot on #{snap}")
+      end
     end
   end
 
   def self.snapshot_destroy(pools, snapshot)
+    # Always do this, because we either made and deferred destroy
+    # a snapshot, or we put a hold on an existing snapshot
     pools.map { |pool| "#{pool}@#{snapshot}" }.each do |snap|
       system "zfs release -r #{snapshot} #{snap}"
       child_error("Error releasing snapshot on #{snap}")
@@ -240,7 +265,7 @@ module ZFS
   def self.snapshot_mount(snapshot, target, options)
     pools = list_pools
     pools &= options.pools.to_a if options.pools.any?
-    snapshot_create(pools, snapshot)
+    snapshot_create(pools, snapshot, options)
 
     mountopts = %w[ro]
     mountopts << 'noexec' unless options.exec
