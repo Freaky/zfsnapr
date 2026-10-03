@@ -136,11 +136,10 @@ class MountpointStore
   def write_mountpoints
     File.open(filename, 'w') do |fd|
       fd.flock(File::LOCK_EX)
-      mounts = Set.new
+      mounts = false
       writer = lambda do |mountpoint|
-        return false unless mounts.add?(mountpoint)
-
-        fd.write("\000") if mounts.any?
+        fd.write("\000") if mounts
+        mounts = true
         fd.write(mountpoint)
         fd.flush
         true
